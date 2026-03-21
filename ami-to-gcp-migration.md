@@ -1,16 +1,18 @@
 # AMI to GCP Migration
 
-This document captures the officially supported migration path for moving an AWS AMI into Google Cloud as a custom image:
+This document captures the officially supported migration path for moving a running EC2 instance in AWS into Google Cloud as a custom image:
 
-`AMI -> S3 -> GCS -> GCP custom image`
+`running EC2 -> AMI -> S3 -> GCS -> GCP custom image`
 
 ## Overview
 
-AWS does not support exporting an AMI directly to Google Cloud Storage. The supported path is:
+AWS does not support exporting an EC2 instance or an AMI directly to Google Cloud Storage. The supported path is:
 
-1. Export the AMI from AWS to an S3 bucket using VM Import/Export.
-2. Copy the exported disk image from S3 to Google Cloud Storage.
-3. Import that disk image into Google Cloud as a custom image.
+1. Scan the AWS California region (`us-west-1`) for running EC2 instances.
+2. Create an AMI from the target running EC2 instance.
+3. Export the AMI to an S3 bucket using VM Import/Export.
+4. Copy the exported disk image from S3 to Google Cloud Storage.
+5. Import that disk image into Google Cloud as a custom image.
 
 References:
 
@@ -25,6 +27,7 @@ References:
 - You need an AWS S3 bucket in the same AWS account used for export.
 - You need a GCP project and a GCS bucket.
 - You need `aws`, `gcloud`, and optionally `gsutil` installed locally.
+- You need to identify which running EC2 instance in `us-west-1` should be turned into an AMI.
 
 ## Variables
 
@@ -33,7 +36,8 @@ Set these before running the commands:
 ```bash
 export AWS_PROFILE=aws-4
 export AWS_REGION=us-west-1
-export AMI_ID=ami-00dabab179635c560
+export INSTANCE_ID=i-00c5d187de48fd124
+export AMI_NAME=migrated-from-ec2-$(date +%Y%m%d-%H%M%S)
 export S3_BUCKET=your-export-bucket
 export S3_PREFIX=exports/
 
@@ -43,7 +47,54 @@ export GCP_ZONE=us-west1-a
 export IMAGE_NAME=imported-ami-image
 ```
 
-## Step 1: Verify the AMI in AWS
+## Step 1: Scan `us-west-1` for Running EC2 Instances
+
+List all running EC2 instances in AWS N. California:
+
+```bash
+aws ec2 describe-instances \
+  --profile "$AWS_PROFILE" \
+  --region "$AWS_REGION" \
+  --filters Name=instance-state-name,Values=running \
+  --query 'Reservations[].Instances[].{InstanceId:InstanceId,Name:Tags[?Key==`Name`]|[0].Value,State:State.Name,InstanceType:InstanceType,PrivateIp:PrivateIpAddress,PublicIp:PublicIpAddress,AZ:Placement.AvailabilityZone,ImageId:ImageId}' \
+  --output table
+```
+
+If you already know the target instance, set it directly:
+
+```bash
+export INSTANCE_ID=i-00c5d187de48fd124
+```
+
+## Step 2: Create an AMI from the Running EC2 Instance
+
+Create the AMI:
+
+```bash
+aws ec2 create-image \
+  --profile "$AWS_PROFILE" \
+  --region "$AWS_REGION" \
+  --instance-id "$INSTANCE_ID" \
+  --name "$AMI_NAME" \
+  --no-reboot
+```
+
+The command returns a new `ImageId`. Save it:
+
+```bash
+export AMI_ID=ami-xxxxxxxxxxxxxxxxx
+```
+
+Wait for the AMI to become available:
+
+```bash
+aws ec2 wait image-available \
+  --profile "$AWS_PROFILE" \
+  --region "$AWS_REGION" \
+  --image-ids "$AMI_ID"
+```
+
+## Step 3: Verify the AMI in AWS
 
 ```bash
 aws ec2 describe-images \
@@ -52,7 +103,7 @@ aws ec2 describe-images \
   --image-ids "$AMI_ID"
 ```
 
-## Step 2: Create the AWS `vmimport` Role
+## Step 4: Create the AWS `vmimport` Role
 
 If the account does not already have the `vmimport` role, create it.
 
@@ -127,7 +178,7 @@ aws iam put-role-policy \
   --policy-document file://role-policy.json
 ```
 
-## Step 3: Export the AMI to S3
+## Step 5: Export the AMI to S3
 
 Start the export task. `VMDK` is a common choice for GCP import workflows.
 
@@ -154,7 +205,7 @@ When complete, the exported file will be in S3 under a path similar to:
 s3://your-export-bucket/exports/export-ami-xxxx.vmdk
 ```
 
-## Step 4: Prepare GCP
+## Step 6: Prepare GCP
 
 Authenticate and select the target project:
 
@@ -169,7 +220,7 @@ Create the destination GCS bucket:
 gcloud storage buckets create "gs://$GCS_BUCKET" --location=us-west1
 ```
 
-## Step 5: Copy the Exported Image from S3 to GCS
+## Step 7: Copy the Exported Image from S3 to GCS
 
 One simple approach is local relay:
 
@@ -185,7 +236,7 @@ gcloud storage cp ./exported-image/*.vmdk "gs://$GCS_BUCKET/"
 
 If the image is large, consider a server-side transfer approach instead of pulling the file through your laptop.
 
-## Step 6: Import the Disk Image into GCP
+## Step 8: Import the Disk Image into GCP
 
 Import the file from GCS into Compute Engine as a custom image:
 
@@ -204,7 +255,7 @@ Replace `--os=debian-12` with the correct guest OS for the AMI. Common values in
 - `centos-7`
 - `windows-2019`
 
-## Step 7: Launch a Test VM in GCP
+## Step 9: Launch a Test VM in GCP
 
 ```bash
 gcloud compute instances create test-imported-vm \
@@ -215,6 +266,7 @@ gcloud compute instances create test-imported-vm \
 ## Validation Checklist
 
 - Confirm the export task completed successfully in AWS.
+- Confirm the AMI was created from the intended running EC2 instance.
 - Confirm the `.vmdk` file exists in GCS.
 - Confirm the custom image exists in GCP.
 - Boot a test VM from the image.
@@ -222,6 +274,7 @@ gcloud compute instances create test-imported-vm \
 
 ## Important Notes
 
+- The starting point for this runbook is a running EC2 instance in `us-west-1`.
 - AWS cannot export an AMI directly to GCS.
 - The AWS-supported export target is S3 in the same AWS account.
 - Not every AMI can be exported.
