@@ -139,16 +139,7 @@ If the bucket already exists, keep using that same `S3_BUCKET` value for:
 - `aws ec2 export-image` output into S3
 - the later S3 to GCS copy step
 
-## Step 4: Verify the AMI in AWS
-
-```bash
-aws ec2 describe-images \
-  --profile "$AWS_PROFILE" \
-  --region "$AWS_REGION" \
-  --image-ids "$AMI_ID"
-```
-
-## Step 5: Create the AWS `vmimport` Role
+## Step 4: Create the AWS `vmimport` Role
 
 If the account does not already have the `vmimport` role, create it.
 
@@ -223,7 +214,7 @@ aws iam put-role-policy \
   --policy-document file://role-policy.json
 ```
 
-## Step 6: Export the AMI to S3
+## Step 5: Export the AMI to S3
 
 Start the export task. `VMDK` is a common choice for GCP import workflows.
 
@@ -250,7 +241,7 @@ When complete, the exported file will be in S3 under a path similar to:
 s3://$S3_BUCKET/exports/export-ami-xxxx.vmdk
 ```
 
-## Step 7: Prepare GCP
+## Step 6: Prepare GCP
 
 Authenticate and select the target project:
 
@@ -265,7 +256,7 @@ Create the destination GCS bucket:
 gcloud storage buckets create "gs://$GCS_BUCKET" --location=us-west1
 ```
 
-## Step 8: Copy the Exported Image from S3 to GCS
+## Step 7: Copy the Exported Image from S3 to GCS
 
 One simple approach is local relay:
 
@@ -281,7 +272,7 @@ gcloud storage cp ./exported-image/*.vmdk "gs://$GCS_BUCKET/"
 
 If the image is large, consider a server-side transfer approach instead of pulling the file through your laptop.
 
-## Step 9: Import the Disk Image into GCP
+## Step 8: Import the Disk Image into GCP
 
 Import the file from GCS into Compute Engine as a custom image:
 
@@ -300,7 +291,7 @@ Replace `--os=debian-12` with the correct guest OS for the AMI. Common values in
 - `centos-7`
 - `windows-2019`
 
-## Step 10: Launch a Test VM in GCP
+## Step 9: Launch a Test VM in GCP
 
 ```bash
 gcloud compute instances create test-imported-vm \
